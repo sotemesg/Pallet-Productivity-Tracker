@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="UTF-8">
+<title>Pallet Scan Tracker</title>
+<style>
+body { font-family: Arial; background:#f2f2f2; padding:20px; }
+.container { background:white; padding:20px; border-radius:10px; max-width:700px; margin:auto; }
+input { width:100%; padding:12px; margin:10px 0; font-size:16px; }
+button { padding:10px; margin:5px 0; cursor:pointer; }
+table { width:100%; border-collapse:collapse; margin-top:20px; }
+th, td { padding:8px; border-bottom:1px solid #ddd; }
+.warning { background-color:#fff3cd; }
+.critical { background-color:#f8d7da; }
+#status { font-weight:bold; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<div class="container">
+<h2>Pallet Productivity Tracker</h2>
+
+<input id="badge" placeholder="Scan Associate Badge" autofocus>
+<input id="pallet" placeholder="Scan Pallet ID">
+
+<div id="status"></div>
+
+<button onclick="exportCSV()">Export to CSV (Open in Excel)</button>
+<button onclick="clearData()">Clear All Data</button>
+
+<table>
+<thead>
+<tr>
+<th>Badge</th>
+<th>Pallet</th>
+<th>Time</th>
+<th>Gap (minutes)</th>
+</tr>
+</thead>
+<tbody id="log"></tbody>
+</table>
+</div>
+
+<script>
+let logs = JSON.parse(localStorage.getItem("logs")) || [];
+let lastScan = {};
+
+function save() {
+  localStorage.setItem("logs", JSON.stringify(logs));
+}
+
+function render() {
+  let table = document.getElementById("log");
+  table.innerHTML = "";
+
+  logs.forEach(entry => {
+    let row = document.createElement("tr");
+    if (entry.gap >= 45) row.className = "critical";
+    else if (entry.gap >= 30) row.className = "warning";
+
+    row.innerHTML = `
+      <td>${entry.badge}</td>
+      <td>${entry.pallet}</td>
+      <td>${entry.time}</td>
+      <td>${entry.gap}</td>
+    `;
+    table.appendChild(row);
+  });
+}
+
+function addScan() {
+  let badge = document.getElementById("badge").value.trim();
+  let pallet = document.getElementById("pallet").value.trim();
+  if (!badge || !pallet) return;
+
+  let now = new Date();
+  let timestamp = now.toLocaleString();
+  let currentTime = now.getTime();
+
+  let gap = 0;
+  if (lastScan[badge]) gap = Math.round((currentTime - lastScan[badge]) / 60000);
+  lastScan[badge] = currentTime;
+
+  logs.unshift({ badge, pallet, time: timestamp, gap });
+
+  save();
+  render();
+
+  let status = document.getElementById("status");
+  if (gap >= 45) { status.textContent = "🔴 CRITICAL GAP: " + gap + " minutes"; status.style.color = "red"; }
+  else if (gap >= 30) { status.textContent = "🟡 WARNING GAP: " + gap + " minutes"; status.style.color = "orange"; }
+  else { status.textContent = "✅ Scan Recorded"; status.style.color = "green"; }
+
+  document.getElementById("badge").value = "";
+  document.getElementById("pallet").value = "";
+  document.getElementById("badge").focus();
+}
+
+["badge", "pallet"].forEach(id => {
+  document.getElementById(id).addEventListener("keypress", function(e) {
+    if (e.key === "Enter") addScan();
+  });
+});
+
+function exportCSV() {
+  let csv = "Badge,Pallet,Timestamp,GapMinutes\n";
+  logs.forEach(entry => {
+    csv += `${entry.badge},${entry.pallet},${entry.time},${entry.gap}\n`;
+  });
+  let blob = new Blob([csv], {type:"text/csv"});
+  let link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "pallet_data.csv";
+  link.click();
+}
+
+function clearData() {
+  if (confirm("Delete all data?")) {
+    logs = [];
+    lastScan = {};
+    save();
+    render();
+  }
+}
+
+render();
+</script>
+
+</body>
+</html>
