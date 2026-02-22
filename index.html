@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pallet Productivity Tracker</title>
+<style>
+body { font-family: Arial, sans-serif; background:#f2f2f2; padding:20px; }
+.container { background:white; padding:20px; border-radius:10px; max-width:700px; margin:auto; }
+input { width:100%; padding:12px; margin:10px 0; font-size:16px; box-sizing:border-box; }
+button { padding:10px; margin:5px 0; cursor:pointer; }
+table { width:100%; border-collapse:collapse; margin-top:20px; }
+th, td { padding:8px; border-bottom:1px solid #ddd; text-align:left; }
+.warning { background-color:#fff3cd; }
+.critical { background-color:#f8d7da; }
+#status { font-weight:bold; margin-top:10px; min-height:1.4em; }
+.actions { display:flex; gap:8px; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h2>Pallet Productivity Tracker</h2>
+
+  <form id="scan-form">
+    <input id="badge" placeholder="Scan Associate Badge" autocomplete="off" autofocus>
+    <input id="pallet" placeholder="Scan Pallet ID" autocomplete="off">
+    <button type="submit">Add Scan</button>
+  </form>
+
+  <div id="status" aria-live="polite"></div>
+
+  <div class="actions">
+    <button type="button" onclick="exportCSV()">Export to CSV (Open in Excel)</button>
+    <button type="button" onclick="clearData()">Clear All Data</button>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Badge</th>
+        <th>Pallet</th>
+        <th>Time</th>
+        <th>Gap (minutes)</th>
+      </tr>
+    </thead>
+    <tbody id="log"></tbody>
+  </table>
+</div>
+
+<script>
+let logs = JSON.parse(localStorage.getItem("logs")) || [];
+let lastScan = JSON.parse(localStorage.getItem("lastScan")) || {};
+
+function save() {
+  localStorage.setItem("logs", JSON.stringify(logs));
+  localStorage.setItem("lastScan", JSON.stringify(lastScan));
+}
+
+function render() {
+  const table = document.getElementById("log");
+  table.innerHTML = "";
+
+  logs.forEach(entry => {
+    const row = document.createElement("tr");
+    if (entry.gap >= 45) row.className = "critical";
+    else if (entry.gap >= 30) row.className = "warning";
+
+    [entry.badge, entry.pallet, entry.time, String(entry.gap)].forEach(value => {
+      const cell = document.createElement("td");
+      cell.textContent = value;
+      row.appendChild(cell);
+    });
+
+    table.appendChild(row);
+  });
+}
+
+function setStatus(message, color) {
+  const status = document.getElementById("status");
+  status.textContent = message;
+  status.style.color = color;
+}
+
+function addScan() {
+  const badgeInput = document.getElementById("badge");
+  const palletInput = document.getElementById("pallet");
+  const badge = badgeInput.value.trim();
+  const pallet = palletInput.value.trim();
+
+  if (!badge || !pallet) {
+    setStatus("Enter both badge and pallet values.", "#555");
+    return;
+  }
+
+  const now = new Date();
+  const timestamp = now.toLocaleString();
+  const currentTime = now.getTime();
+
+  let gap = 0;
+  if (lastScan[badge]) gap = Math.round((currentTime - lastScan[badge]) / 60000);
+  lastScan[badge] = currentTime;
+
+  logs.unshift({ badge, pallet, time: timestamp, gap });
+
+  save();
+  render();
+
+  if (gap >= 45) setStatus(`🔴 CRITICAL GAP: ${gap} minutes`, "red");
+  else if (gap >= 30) setStatus(`🟡 WARNING GAP: ${gap} minutes`, "orange");
+  else setStatus("✅ Scan Recorded", "green");
+
+  badgeInput.value = "";
+  palletInput.value = "";
+  badgeInput.focus();
+}
+
+function toCSVValue(value) {
+  const safe = String(value).replace(/"/g, '""');
+  return `"${safe}"`;
+}
+
+function exportCSV() {
+  let csv = "Badge,Pallet,Timestamp,GapMinutes\n";
+  logs.forEach(entry => {
+    csv += [entry.badge, entry.pallet, entry.time, entry.gap].map(toCSVValue).join(",") + "\n";
+  });
+
+  const blob = new Blob([csv], { type: "text/csv" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "pallet_data.csv";
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function clearData() {
+  if (confirm("Delete all data?")) {
+    logs = [];
+    lastScan = {};
+    save();
+    render();
+    setStatus("Data cleared.", "#555");
+  }
+}
+
+document.getElementById("scan-form").addEventListener("submit", event => {
+  event.preventDefault();
+  addScan();
+});
+
+render();
+</script>
+
+</body>
+</html>
