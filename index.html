@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<title>Pallet Productivity Tracker</title>
+
+<style>
+body { font-family: Arial; background:#f2f2f2; padding:20px; }
+.container { background:white; padding:20px; border-radius:10px; max-width:1000px; margin:auto; }
+
+.tabs { display:flex; margin-bottom:15px; }
+.tab-btn {
+  flex:1;
+  padding:12px;
+  cursor:pointer;
+  border:none;
+  background:#ddd;
+  font-weight:bold;
+}
+.tab-btn.active { background:#111827; color:white; }
+
+.tab-content { display:none; }
+.tab-content.active { display:block; }
+
+input { width:100%; padding:12px; margin:10px 0; font-size:16px; }
+button { padding:10px; margin:5px 5px 5px 0; cursor:pointer; }
+
+table { width:100%; border-collapse:collapse; margin-top:10px; }
+th, td { padding:8px; border-bottom:1px solid #ddd; text-align:left; }
+th { background:#111827; color:white; }
+
+.warning { background-color:#fff3cd; }
+.critical { background-color:#f8d7da; }
+
+.status {
+  margin-top: 6px;
+  padding: 10px;
+  border-radius: 8px;
+  font-weight: bold;
+  display:none;
+}
+.status.ok { background:#e7f7ee; color:#106b3d; display:block; }
+.status.warn { background:#fff3cd; color:#8a5a00; display:block; }
+.status.crit { background:#f8d7da; color:#8a1c1c; display:block; }
+
+.leaderboard-row { cursor:pointer; }
+.leaderboard-row:hover { background:#f4f7ff; }
+
+details { margin-top:15px; padding:10px; background:#fafafa; border-radius:8px; }
+.small { font-size: 12px; color:#555; margin-top:6px; }
+</style>
+</head>
+
+<body>
+
+<div class="container">
+<h2>Pallet Productivity Tracker</h2>
+<div class="small">Flow: Scan Badge → Enter (goes to pallet) → Scan Pallet → Enter (saves)</div>
+
+<div class="tabs">
+  <button class="tab-btn active" onclick="openTab('scanTab', this)">Scan + Live Log</button>
+  <button class="tab-btn" onclick="openTab('leaderboardTab', this)">Leaderboard</button>
+</div>
+
+<!-- TAB 1 -->
+<div id="scanTab" class="tab-content active">
+  <input id="badge" placeholder="Scan Associate Badge" autofocus />
+  <input id="pallet" placeholder="Scan Pallet ID (press Enter here)" />
+  <div id="status" class="status"></div>
+
+  <button onclick="exportAllScansCSV()">Export All Scans (CSV)</button>
+  <button onclick="exportIdleSummaryCSV()">Export Idle Summary (CSV)</button>
+  <button onclick="exportEgregiousIdleCSV()">Export Egregious Idle (15+ min) (CSV)</button>
+  <button onclick="exportAllDetailsCSV()">Export All Details (CSV)</button>
+  <button onclick="clearData()">Clear All Data</button>
+
+  <h3>Live Log</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Badge</th>
+        <th>Pallet</th>
+        <th>Time</th>
+        <th>Gap (min)</th>
+      </tr>
+    </thead>
+    <tbody id="log"></tbody>
+  </table>
+</div>
+
+<!-- TAB 2 -->
+<div id="leaderboardTab" class="tab-content">
+  <h3>Leaderboard</h3>
+  <div class="small">Idle + Last Scan auto-refresh every 15 seconds.</div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Associate</th>
+        <th>Total Pallets</th>
+        <th>Last Scan</th>
+        <th>Idle (min)</th>
+        <th>Max Gap (min)</th>
+      </tr>
+    </thead>
+    <tbody id="leaderboard"></tbody>
+  </table>
+
+  <details id="detailPanel">
+    <summary id="detailTitle">Select an associate to view details</summary>
+    <div id="detailBody"></div>
+  </details>
+</div>
+
+</div>
+
+<script>
+const STORAGE_KEY = "pallet_logs_v5";
+let logs = JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+let lastScanCache = {}; // for quick gap calc at scan time
+
+const WARN_MIN = 30;
+const CRIT_MIN = 45;
+const EGREGIOUS_MIN = 15;
+
+const badgeEl = document.getElementById("badge");
+const palletEl = document.getElementById("pallet");
+const statusEl = document.getElementById("status");
+const logEl = document.getElementById("log");
+const leaderboardEl = document.getElementById("leaderboard");
+const detailTitle = document.getElementById("detailTitle");
+const detailBody = document.getElementById("detailBody");
+
+function save() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(logs));
+}
+
+function openTab(tabId, btn) {
+  document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+  document.getElementById(tabId).classList.add("active");
+  btn.classList.add("active");
+}
+
+/* ===== SCANNING ===== */
+function addScan() {
+  const badge = badgeEl.value.trim();
+  const pallet = palletEl.value.trim();
+  if (!badge || !pallet) return;
+
+  const now = Date.now();
+  let gap = 0;
+
+  let prev = lastScanCache[badge];
+  if (!prev) {
+    const found = logs.find(l => l.badge === badge);
+    if (found) prev = found.ts;
+  }
+  if (prev) gap = Math.round((now - prev) / 60000);
+
+  lastScanCache[badge] = now;
+
+  logs.unshift({
+    badge,
+    pallet,
+    ts: now,
+    time: new Date(now).toLocaleString(),
+    gap
+  });
+
+  save();
+  renderAll();
+  showStatus(badge, pallet, gap);
+
+  badgeEl.value = "";
+  palletEl.value = "";
+  badgeEl.focus();
+}
+
+function showStatus(badge, pallet, gap) {
+  statusEl.className = "status";
+
+  if (gap >= CRIT_MIN) {
+    statusEl.classList.add("crit");
+    statusEl.textContent = `🔴 Scan saved: ${badge} → ${pallet} | CRITICAL gap ${gap} min`;
+  } else if (gap >= WARN_MIN) {
+    statusEl.classList.add("warn");
+    statusEl.textContent = `🟡 Scan saved: ${badge} → ${pallet} | Warning gap ${gap} min`;
+  } else {
+    statusEl.classList.add("ok");
+    statusEl.textContent = `✅ Scan saved: ${badge} → ${pallet}`;
+  }
+
+  clearTimeout(showStatus._t);
+  showStatus._t = setTimeout(() => {
+    statusEl.style.display = "none";
+    statusEl.className = "status";
+    statusEl.textContent = "";
+  }, 2500);
+}
+
+/* Enter behavior */
+badgeEl.addEventListener("keypress", e => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    palletEl.focus();
+  }
+});
+palletEl.addEventListener("keypress", e => {
+  if (e.key === "Enter") addScan();
+});
+
+/* ===== RENDER LOG ===== */
+function renderLog() {
+  logEl.innerHTML = "";
+  logs.forEach(entry => {
+    const tr = document.createElement("tr");
+    if (entry.gap >= CRIT_MIN) tr.className = "critical";
+    else if (entry.gap >= WARN_MIN) tr.className = "warning";
+
+    tr.innerHTML = `
+      <td>${entry.badge}</td>
+      <td>${entry.pallet}</td>
+      <td>${entry.time}</td>
+      <td>${entry.gap || 0}</td>
+    `;
+    logEl.appendChild(tr);
+  });
+}
+
+/* ===== SUMMARY (includes max gap window start/end) ===== */
+function buildBadgeSummary() {
+  // badge -> {count, lastTs, maxGap, maxGapStartTs, maxGapEndTs}
+  const map = {};
+
+  // logs are newest-first. For max-gap window we need chronological order.
+  const oldestFirst = [...logs].slice().reverse();
+  const prevTsByBadge = {};
+
+  oldestFirst.forEach(l => {
+    const b = l.badge;
+
+    if (!map[b]) {
+      map[b] = {
+        count: 0,
+        lastTs: 0,
+        maxGap: 0,
+        maxGapStartTs: null,
+        maxGapEndTs: null
+      };
+    }
+
+    map[b].count += 1;
+    map[b].lastTs = Math.max(map[b].lastTs, l.ts);
+
+    const prev = prevTsByBadge[b];
+    if (prev) {
+      const gap = Math.round((l.ts - prev) / 60000);
+      if (gap > map[b].maxGap) {
+        map[b].maxGap = gap;
+        map[b].maxGapStartTs = prev; // scan BEFORE the gap
+        map[b].maxGapEndTs = l.ts;   // scan AFTER the gap
+      }
+    }
+
+    prevTsByBadge[b] = l.ts;
+  });
+
+  return Object.entries(map).map(([badge, d]) => {
+    const idle = Math.round((Date.now() - d.lastTs) / 60000);
+    return {
+      badge,
+      total: d.count,
+      lastTs: d.lastTs,
+      idle,
+      maxGap: d.maxGap,
+      maxGapStartTs: d.maxGapStartTs,
+      maxGapEndTs: d.maxGapEndTs
+    };
+  });
+}
+
+/* ===== RENDER LEADERBOARD ===== */
+function renderLeaderboard() {
+  const rows = buildBadgeSummary();
+
+  // Manager-focused default: highest CURRENT idle -> lowest
+  rows.sort((a,b) => (b.idle - a.idle) || (b.maxGap - a.maxGap) || (b.total - a.total));
+
+  leaderboardEl.innerHTML = "";
+
+  rows.forEach(r => {
+    const tr = document.createElement("tr");
+    tr.classList.add("leaderboard-row");
+
+    if (r.idle >= CRIT_MIN) tr.classList.add("critical");
+    else if (r.idle >= WARN_MIN) tr.classList.add("warning");
+
+    tr.innerHTML = `
+      <td>${r.badge}</td>
+      <td>${r.total}</td>
+      <td>${new Date(r.lastTs).toLocaleString()}</td>
+      <td>${r.idle}</td>
+      <td>${r.maxGap}</td>
+    `;
+
+    tr.onclick = () => showDetails(r.badge);
+    leaderboardEl.appendChild(tr);
+  });
+}
+
+/* ===== DETAILS ===== */
+function showDetails(badge) {
+  const userLogs = logs.filter(l => l.badge === badge);
+  const summary = buildBadgeSummary().find(x => x.badge === badge);
+
+  const start = summary?.maxGapStartTs ? new Date(summary.maxGapStartTs).toLocaleString() : "N/A";
+  const end = summary?.maxGapEndTs ? new Date(summary.maxGapEndTs).toLocaleString() : "N/A";
+
+  detailTitle.textContent =
+    `Details for ${badge} — Total: ${summary?.total ?? 0} | Idle: ${summary?.idle ?? 0}m | Max Gap: ${summary?.maxGap ?? 0}m`;
+
+  detailBody.innerHTML = `
+    <div class="small"><strong>Worst Gap Window:</strong> ${summary?.maxGap ?? 0}m | Start: ${start} | End: ${end}</div>
+    <button onclick="exportSingleBadgeCSV('${badge}')">Export ${badge} (CSV)</button>
+    <div class="small">Showing last 25 scans</div>
+    <div style="margin-top:10px;">
+      ${userLogs.slice(0, 25).map(l => {
+        const flag = (l.gap >= CRIT_MIN) ? "🔴" : (l.gap >= WARN_MIN) ? "🟡" : "✅";
+        return `<div>${flag} ${l.time} — Pallet <strong>${l.pallet}</strong> (Gap ${l.gap || 0}m)</div>`;
+      }).join("") || "No scans found."}
+    </div>
+  `;
+}
+
+/* ===== EXPORTS ===== */
+function exportAllScansCSV() {
+  let csv = "Badge,Pallet,Time,GapMinutes
+";
+  logs.forEach(l => csv += `${csvEscape(l.badge)},${csvEscape(l.pallet)},${csvEscape(l.time)},${l.gap || 0}
+`);
+  downloadCSV(csv, "pallet_all_scans.csv");
+}
+
+/* Regular Idle Summary (current idle view) */
+function exportIdleSummaryCSV() {
+  const rows = buildBadgeSummary()
+    .sort((a,b) => (b.idle - a.idle) || (b.maxGap - a.maxGap) || (b.total - a.total));
+
+  let csv = "Badge,TotalPallets,LastScan,CurrentIdleMinutes,MaxGapMinutes
+";
+  rows.forEach(r => {
+    csv += `${csvEscape(r.badge)},${r.total},${csvEscape(new Date(r.lastTs).toLocaleString())},${r.idle},${r.maxGap}
+`;
+  });
+
+  downloadCSV(csv, "pallet_idle_summary.csv");
+}
+
+/* Egregious Idle Time (15+ only): uses max gap window with start/end times */
+function exportEgregiousIdleCSV() {
+  const rows = buildBadgeSummary()
+    .filter(r => r.maxGap >= EGREGIOUS_MIN)
+    .sort((a,b) => (b.maxGap - a.maxGap) || (b.idle - a.idle) || (b.total - a.total));
+
+  let csv = "Badge,TotalPallets,MaxGapMinutes,GapStartTime,GapEndTime,LastScan,CurrentIdleMinutes
+";
+
+  rows.forEach(r => {
+    const start = r.maxGapStartTs ? new Date(r.maxGapStartTs).toLocaleString() : "";
+    const end = r.maxGapEndTs ? new Date(r.maxGapEndTs).toLocaleString() : "";
+    const last = new Date(r.lastTs).toLocaleString();
+
+    csv += `${csvEscape(r.badge)},${r.total},${r.maxGap},${csvEscape(start)},${csvEscape(end)},${csvEscape(last)},${r.idle}
+`;
+  });
+
+  downloadCSV(csv, "pallet_egregious_idle_15plus.csv");
+}
+
+/* Details dump (good for Excel Pivot expand/collapse) */
+function exportAllDetailsCSV() {
+  let csv = "Badge,Pallet,Time,GapMinutes
+";
+  const oldestFirst = [...logs].slice().reverse();
+  oldestFirst.forEach(l => {
+    csv += `${csvEscape(l.badge)},${csvEscape(l.pallet)},${csvEscape(l.time)},${l.gap || 0}
+`;
+  });
+  downloadCSV(csv, "pallet_details_all.csv");
+}
+
+function exportSingleBadgeCSV(badge) {
+  const userLogs = logs.filter(l => l.badge === badge);
+  let csv = "Badge,Pallet,Time,GapMinutes
+";
+  userLogs.forEach(l => {
+    csv += `${csvEscape(l.badge)},${csvEscape(l.pallet)},${csvEscape(l.time)},${l.gap || 0}
+`;
+  });
+  downloadCSV(csv, `pallet_${badge}.csv`);
+}
+
+function csvEscape(v) {
+  const s = String(v ?? "");
+  return /[",
+]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+}
+
+function downloadCSV(text, filename) {
+  const blob = new Blob([text], {type:"text/csv;charset=utf-8;"});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+}
+
+/* ===== CLEAR ===== */
+function clearData() {
+  if (confirm("Delete all data?")) {
+    logs = [];
+    lastScanCache = {};
+    localStorage.removeItem(STORAGE_KEY);
+    renderAll();
+  }
+}
+
+/* ===== RENDER ALL ===== */
+function renderAll() {
+  renderLog();
+  renderLeaderboard();
+}
+
+renderAll();
+
+/* Auto-refresh idle + last scan display even if no new scans happen */
+setInterval(() => {
+  renderLeaderboard();
+}, 15000);
+</script>
+
+</body>
+</html>
